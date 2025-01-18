@@ -1,0 +1,13 @@
+my-oil-tank-monitoring/
+├── .gitignore
+├── README.md
+├── requirements.txt
+├── data/
+│   └── satellite_images/
+│       ├── sample1.jpg
+│       ├── sample2.png
+│       └── ...
+├── src/
+│   ├── detection.py       # Computer vision for tank detection & volume estimation
+│   └── llm_integration.py # Ollama/LLM-related code (prompt, query, etc.)
+└── app.py                 # Main Streamlit application

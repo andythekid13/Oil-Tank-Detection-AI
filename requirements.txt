@@ -1,0 +1,8 @@
+streamlit
+pillow
+torch
+torchvision
+transformers>=4.28.0
+accelerate
+safetensors
+pandas
