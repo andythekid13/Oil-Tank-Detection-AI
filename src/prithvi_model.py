@@ -3,15 +3,22 @@ import numpy as np
 from PIL import Image
 import logging
 import math
+import torch
+from transformers import AutoTokenizer, AutoImageProcessor, AutoModelForSequenceClassification
 
 class SatelliteImageAnalyzer:
     def __init__(self):
         self.min_diameter = 20
         self.max_diameter = 200
-        # Standard ratios for oil storage tanks
-        self.height_to_diameter_ratio = 0.6  # Typical ratio for large storage tanks
-        self.pixels_to_meters = 0.5  # Will be calibrated based on image resolution
-        logging.info("Initialized analyzer with volume calculation capability")
+        self.height_to_diameter_ratio = 0.6
+        self.pixels_to_meters = 0.5
+
+        # Initialize without the vision model for now
+        self.model = None
+        self.tokenizer = None
+        self.image_processor = None
+        
+        logging.info("Initialized analyzer with basic capabilities")
 
     def calculate_confidence(self, roi):
         """Calculate confidence score based on image features"""
@@ -19,14 +26,10 @@ class SatelliteImageAnalyzer:
             if roi.size == 0:
                 return 0.5
                 
-            # Calculate basic metrics
             contrast = (np.max(roi) - np.min(roi)) / 255
             std_dev = np.std(roi) / 255
-            
-            # Combine metrics
             confidence = (contrast * 0.6 + std_dev * 0.4)
             
-            # Clip to range [0.3, 0.95]
             return f"{min(max(confidence, 0.3), 0.95):.2%}"
             
         except Exception as e:
@@ -36,17 +39,10 @@ class SatelliteImageAnalyzer:
     def calculate_tank_volume(self, diameter_pixels):
         """Calculate the approximate volume of a cylindrical tank"""
         try:
-            # Convert pixels to meters
             diameter_meters = diameter_pixels * self.pixels_to_meters
-            
-            # Calculate height using typical ratio
             height_meters = diameter_meters * self.height_to_diameter_ratio
-            
-            # Calculate volume (π * r² * h)
             radius_meters = diameter_meters / 2
             volume = math.pi * (radius_meters ** 2) * height_meters
-            
-            # Convert to barrels (1 cubic meter = 6.28981 barrels)
             volume_barrels = volume * 6.28981
             
             return {
@@ -104,28 +100,25 @@ class SatelliteImageAnalyzer:
     def analyze_image(self, image_path):
         """Analyze image for oil tanks"""
         try:
-            # Read and preprocess image
             image = cv2.imread(image_path)
             if image is None:
                 raise ValueError(f"Could not read image: {image_path}")
             
-            # Resize for better processing
             max_dimension = 800
             height, width = image.shape[:2]
             if max(height, width) > max_dimension:
                 scale = max_dimension / max(height, width)
                 image = cv2.resize(image, (int(width * scale), int(height * scale)))
+            else:
+                scale = 1.0
             
-            # Detect tanks
             tanks = self.detect_tanks(image)
-            
-            # Calculate average confidence
             confidences = [float(tank['confidence'].strip('%')) / 100 for tank in tanks]
             avg_confidence = np.mean(confidences) if confidences else 0
             
             return {
                 "tanks": tanks,
-                "image_scale": scale if max(height, width) > max_dimension else 1.0,
+                "image_scale": scale,
                 "confidence_score": avg_confidence
             }
             
@@ -134,22 +127,29 @@ class SatelliteImageAnalyzer:
             return None
 
     def detect_industrial_features(self, image_path):
-        """Main detection method with structured output"""
+        """Main detection method with structured output including oil value calculations"""
         try:
             results = self.analyze_image(image_path)
             if not results:
                 return {"error": "Analysis failed"}
             
-            # Structure the data for table display
+            results["image_path"] = image_path
             tanks_data = []
+            total_value = 0
+            current_oil_price = 80.73
+            
             for i, tank in enumerate(results["tanks"], 1):
+                volume_barrels = tank["volume_info"]["volume_barrels"]
+                total_value += volume_barrels * current_oil_price
+                
                 tanks_data.append({
                     "tank_number": i,
                     "diameter_pixels": tank["diameter_pixels"],
                     "diameter_meters": tank["volume_info"]["diameter_meters"],
-                    "volume_barrels": tank["volume_info"]["volume_barrels"],
+                    "volume_barrels": volume_barrels,
                     "position": tank["position"],
-                    "confidence": tank["confidence"]
+                    "confidence": tank["confidence"],
+                    "oil_value_usd": volume_barrels * current_oil_price
                 })
             
             total_volume = sum(tank["volume_barrels"] for tank in tanks_data)
@@ -157,14 +157,12 @@ class SatelliteImageAnalyzer:
             return {
                 "analysis_type": "Oil Tank Detection",
                 "tanks_data": tanks_data,
-                "summary": [
-                    f"Detected {len(tanks_data)} potential oil storage tanks",
-                    f"Total estimated storage capacity: {total_volume:,.2f} barrels",
-                    f"Average confidence: {results['confidence_score']:.2%}"
-                ] if tanks_data else ["No oil storage tanks detected"],
+                "image_path": image_path,
                 "metrics": {
                     "total_tanks": len(tanks_data),
                     "total_capacity_barrels": total_volume,
+                    "total_oil_value": total_value,
+                    "price_per_barrel": current_oil_price,
                     "confidence_score": f"{results['confidence_score']:.2%}"
                 }
             }
@@ -187,11 +185,17 @@ class SatelliteImageAnalyzer:
                     cv2.circle(image, (tank['x'], tank['y']), 2, (0, 0, 255), 3)
                     # Add volume information
                     volume_text = f"{tank['volume_info']['volume_barrels']:.0f} bbl"
+                    value_text = f"${tank['volume_info']['volume_barrels'] * 80.73:,.0f}"
+                    
+                    # Add text annotations
                     cv2.putText(image, 
                               volume_text,
                               (tank['x'] - 30, tank['y'] + tank['radius'] + 20),
                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    # Add confidence
+                    cv2.putText(image,
+                              value_text,
+                              (tank['x'] - 30, tank['y'] + tank['radius'] + 40),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     cv2.putText(image,
                               tank['confidence'],
                               (tank['x'] - 20, tank['y'] - tank['radius'] - 10),

@@ -6,3 +6,6 @@ transformers>=4.28.0
 accelerate
 safetensors
 pandas
+opencv-python
+numpy
+requests
